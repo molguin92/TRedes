@@ -100,7 +100,10 @@ int init_connection ( int id )
     connection.lfr = -1;
 
     for ( i = 0; i < MAX_SQN; i++ )
+    {
         connection.timeout[i] = -1;
+        connection.resend[i] = 0;
+    }
 
     connection.laf = connection.lfr + WND_SIZE;
     connection.state = CONNECTED;
