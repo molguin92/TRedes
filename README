@@ -1,0 +1,17 @@
+Explicacion
+
+El algoritmo que sigue la tarea es el siguiente:
+
+1. Al comenzar, llena la ventana antes de enviarla completamente.
+2. Al recibir un ACK > LAR, desplaza LAR al la posicion del ACK recien obtenido, 
+abriendo asi mas espacio para enviar paquetes (y marca esto, de tal manera 
+de que inmediatamente se mande otro paquete).
+3. Si obtiene un ACK erroneo, cuenta. Al contar 3 erroneos genera un timeout,
+y reenvia toda la ventana.
+5. Al enviar un paquete, lo guarda en el arreglo de bufers y luego incrementa LFS,
+modulo el nro maximo de nros de secuencia.
+6. Al recibir, recibe de un paquete a la vez, enviando acks correspondientes.
+
+Por alguna razon, funciona 90% para enviar, pero no para recibir desde el servidor.
+Creo que puede ser porque el profesor usa otros numeros de secuencia (yo parti
+de 0, pero al parecer el parte de 1?? )
