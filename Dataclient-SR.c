@@ -97,7 +97,7 @@ int init_connection ( int id )
 
     connection.lar = -1;
     connection.lfs = -1;
-    connection.lfr = -1;
+    connection.lfr = 0;
 
     for ( i = 0; i < MAX_SQN; i++ )
     {
@@ -106,6 +106,10 @@ int init_connection ( int id )
     }
 
     connection.laf = connection.lfr + WND_SIZE;
+
+    for ( i = 0; i < WND_SIZE; i++ )
+        connection.exp_dat[i] = 1;
+
     connection.state = CONNECTED;
     connection.wbox = create_bufbox ( MAX_QUEUE );
     connection.rbox = create_bufbox ( MAX_QUEUE );
@@ -267,6 +271,7 @@ static void *Drcvr ( void *ppp )
         if ( cl != connection.id ) continue;
 
         pthread_mutex_lock ( &Dlock );
+        fprintf ( stderr, "Lock plas\n");
 
         if ( inbuf[DTYPE] == CLOSE )
         {
@@ -313,7 +318,7 @@ static void *Drcvr ( void *ppp )
 
                 /* si DSEQ no corresponde al pkg mas viejo, sumamos al contador
                 * de reenvio */
-                if ( inbuf[DSEQ] != connection.lar + 1 )
+                if ( inbuf[DSEQ] != ( connection.lar + 1) % ( MAX_SQN + 1 ) )
                 {
                     connection.nack_cnt++;
                     if ( connection.nack_cnt >= 3 )
@@ -353,6 +358,10 @@ static void *Drcvr ( void *ppp )
 
             else /* no esta en ventana */
             {
+                connection.resend[inbuf[DSEQ]] = 0;
+                connection.timeout[inbuf[DSEQ]]  = -1;
+                connection.exp_ack[inbuf[DSEQ]] = 0;
+
                 connection.nack_cnt++;
                 if ( connection.nack_cnt >= 3 )
                 {
@@ -374,6 +383,8 @@ static void *Drcvr ( void *ppp )
 
             if ( boxsz ( connection.rbox ) >= MAX_QUEUE ) /* No tengo espacio */
             {
+                if ( Data_debug )
+                    fprintf ( stderr, "No hay espacio, descarto\n" );
                 pthread_mutex_unlock ( &Dlock );
                 continue;
             }
@@ -400,6 +411,9 @@ static void *Drcvr ( void *ppp )
                 }
                 else
                 {
+
+                    connection.exp_dat[inbuf[DSEQ]] = 0;
+
                     /* copiamos a la ventana de recepcion */
                     for ( i = DHDR; i < cnt; i++ )
                         connection.rwindow[inbuf[DSEQ]][i] = inbuf[i];
@@ -413,6 +427,9 @@ static void *Drcvr ( void *ppp )
                         {
                             connection.lfr = ( connection.lfr + 1 ) % ( MAX_SQN + 1 );
                             connection.laf = ( connection.laf + 1 ) % ( MAX_SQN + 1 );
+
+                            connection.exp_dat[connection.lfr] = 0;
+                            connection.exp_dat[connection.laf] = 1;
 
                             putbox ( connection.rbox,
                                 connection.rwindow[connection.lfr],
@@ -487,7 +504,7 @@ int Dclient_timeout_or_pending_data( double *timeout )
     {
         /* revisamos si hay que reenviar */
         /* revisamos si hay timeouts vencidos */
-        if ( connection.resend[i] || ( connection.timeout[i] <= Now() && connection.timeout >= 0 ) )
+        if ( connection.resend[i] || ( connection.timeout[i] <= Now() && connection.timeout[i] >= 0 ) )
         {
             connection.resend[i] = 1;
             *timeout = Now();
@@ -556,12 +573,15 @@ static void *Dsender ( void *ppp )
 
             }
 
+            pthread_cond_signal ( &Dcond );
+
         }
 
         else if ( rc == INTERR_DATA ) /* data en la bufbox */
         {
             /* hay data en el buffer, y tengo espacio para enviar */
             sendPacket( -1 );
+            pthread_cond_signal ( &Dcond );
         }
 
         pthread_mutex_unlock ( &Dlock );
@@ -620,7 +640,7 @@ static void sendPacket( int seqn )
             ( char * ) connection.swindow[nlfs] + DHDR, BUF_SIZE );
 
         connection.swindow[nlfs][DID] = connection.id;
-        connection.swindow[nlfs][DSEQ] = seqn;
+        connection.swindow[nlfs][DSEQ] = nlfs;
         connection.swindow[nlfs][DRTN] = 1;
 
         if ( connection.pending_sz[nlfs] == -1 ) /* eof */
