@@ -18,12 +18,13 @@
 
 #define MAX_QUEUE 100 /* buffers en boxes */
 
-/* Version Go-Back-N */
+/* Version Selective Repeat */
 
-void updRTT(); /* funcion para actualizar RTT y timeout */
-void sendPacket( int seqn ); /* reenvia un paquete */
-int in_SWindow ( unsigned char seqn ); /* verifica que seqn este en la ventana de envio */
-int in_RWindow ( unsigned char seqn ); /* verifica que seqn este en la ventana de recepcion */
+static void updRTT(); /* funcion para actualizar RTT y timeout */
+static void sendPacket( int seqn ); /* reenvia un paquete */
+static int in_SWindow ( unsigned char seqn ); /* verifica que seqn este en la ventana de envio */
+static int in_RWindow ( unsigned char seqn ); /* verifica que seqn este en la ventana de recepcion */
+static int checkSpaceInWindow()
 
 int Data_debug = 0; /* para debugging */
 
@@ -305,8 +306,6 @@ static void *Drcvr ( void *ppp )
                     fprintf ( stderr, "recv ACK id=%d, SEQ=%d,  LAR=%d, LFS=%d\n",
                             cl, inbuf[DSEQ], connection.lar, connection.lfs );
 
-                connection.exp_ack[inbuf[DSEQ]] = 0;
-
                 /* si DSEQ no corresponde al pkg mas viejo, sumamos al contador
                 * de reenvio */
                 if ( inbuf[DSEQ] != connection.lar + 1 )
@@ -320,19 +319,20 @@ static void *Drcvr ( void *ppp )
                 }
 
                 /* movemos la ventana*/
-                else /* inbuf[DSEQ] != connection.lar + 1  */
+                else /* inbuf[DSEQ] == connection.lar + 1  */
                 {
-                    connection.lar++;
+                    connection.lar = ( connection.lar + 1) % ( MAX_SQN + 1 );
                 }
 
                 /* reseteamos valores de resend y timeout */
                 connection.resend[inbuf[DSEQ]] = 0;
-                connection.timeout[inbuf[DSEQ]]  = 0;
+                connection.timeout[inbuf[DSEQ]]  = -1;
+                connection.exp_ack[inbuf[DSEQ]] = 0;
 
                 /* verificamos que el nro de retrans coincida y
                  * actualizamos el RTT */
                 if ( connection.swindow[inbuf[DSEQ]][DRTN] == inbuf[DRTN] )
-                    updRTT (); /* aqui actualizamos el RTT */
+                    updRTT ( inbuf[DSEQ] ); /* aqui actualizamos el RTT */
 
                 if ( connection.state == CLOSED )
                 {
@@ -352,6 +352,8 @@ static void *Drcvr ( void *ppp )
                     connection.resend[connection.lar + 1] = 1;
                     connection.nack_cnt = 0;
                 }
+
+                pthread_cond_signal ( &Dcond );
             }
 
         }
@@ -379,40 +381,46 @@ static void *Drcvr ( void *ppp )
 
                 /* verificar que no haya sido recibido */
 
-                if ( Data_debug ) fprintf ( stderr, "Dentro de Ventana, enviando ACK %d, seq=%d\n", ack[DID],
-                                                ack[DSEQ] );
-
-                connection.exp_dat[inbuf[DSEQ]] = 0;
-
-                /* copiamos a la ventana de recepcion */
-                for ( i = DHDR; i < cnt; i++ )
-                    connection.rwindow[inbuf[DSEQ]][i] = inbuf[i];
+                if ( Data_debug )
+                    fprintf ( stderr, "Dentro de Ventana, enviando ACK %d, seq=%d\n", ack[DID], ack[DSEQ] );
 
                 if ( send ( Dsock, ack, DHDR, 0 ) < 0 )
                     perror ( "sendack" );
 
-                /* si el pkg corresponde al que sigue al ultimo pkg recibido en
-                * orden, corremos la ventana hasta encontrar un pkg todavia no
-                * recibido en orden, y pasamos todos los pkgs en orden al box */
-                if ( inbuf[DSEQ] == ( connection.lfr + 1 ) % ( MAX_SQN + 1 ) )
+                if ( !connection.exp_dat[inbuf[DSEQ]] )
                 {
-                    while ( !connection.exp_dat[( connection.lfr + 1 ) % ( MAX_SQN + 1 )] )
-                    {
-                        connection.lfr = ( connection.lfr + 1 ) % ( MAX_SQN + 1 );
-                        connection.laf = ( connection.laf + 1 ) % ( MAX_SQN + 1 );
+                    if ( Data_debug ) fprintf ( stderr, "Duplicado\n" );
+                }
+                else
+                {
+                    /* copiamos a la ventana de recepcion */
+                    for ( i = DHDR; i < cnt; i++ )
+                        connection.rwindow[inbuf[DSEQ]][i] = inbuf[i];
 
-                        putbox ( connection.rbox,
+                    /* si el pkg corresponde al que sigue al ultimo pkg recibido en
+                    * orden, corremos la ventana hasta encontrar un pkg todavia no
+                    * recibido en orden, y pasamos todos los pkgs en orden al box */
+                    if ( inbuf[DSEQ] == ( connection.lfr + 1 ) % ( MAX_SQN + 1 ) )
+                    {
+                        while ( !connection.exp_dat[( connection.lfr + 1 ) % ( MAX_SQN + 1 )] )
+                        {
+                            connection.lfr = ( connection.lfr + 1 ) % ( MAX_SQN + 1 );
+                            connection.laf = ( connection.laf + 1 ) % ( MAX_SQN + 1 );
+
+                            putbox ( connection.rbox,
                                 connection.rwindow[connection.lfr],
                                 cnt - DHDR );
 
-                        /* aqui agregar busy-waiting con condition en caso de
-                        * que el box de recepcion se llene */
+                                /* aqui agregar busy-waiting con condition en caso de
+                            * que el box de recepcion se llene */
 
-                        while ( boxsz ( connection.rbox ) >= MAX_QUEUE );
-                            /* esperar condicion y luego seguir */
+                            while ( boxsz ( connection.rbox ) >= MAX_QUEUE );
+                                /* esperar condicion y luego seguir */
+                        }
                     }
                 }
 
+                pthread_cond_signal ( &Dcond );
             }
             else /* no esta en ventana */
             {
@@ -428,6 +436,8 @@ static void *Drcvr ( void *ppp )
 
                 if ( send ( Dsock, ack, DHDR, 0 ) < 0 )
                     perror ( "sendack" );
+
+                pthread_cond_signal ( &Dcond );
 
             }
 
@@ -462,7 +472,7 @@ int Dclient_timeout_or_pending_data( double *timeout )
     {
         /* revisamos si hay que reenviar */
         /* revisamos si hay timeouts vencidos */
-        if ( connection.resend[i] || connection.timeout[i] <= Now() )
+        if ( connection.resend[i] || ( connection.timeout[i] <= Now() && connection.timeout >= 0 )
         {
             connection.resend[i] = 1;
             *timeout = Now();
@@ -471,7 +481,7 @@ int Dclient_timeout_or_pending_data( double *timeout )
 
         /* si no esta vencido, vemos si por lo menos es menor que
         * el timeout actual */
-        if ( connection.timeout[i] <= *timeout )
+        if ( connection.timeout[i] <= *timeout && connection.timeout >= 0 )
             *timeout = connection.timeout[i];
 
     }
@@ -487,7 +497,7 @@ int Dclient_timeout_or_pending_data( double *timeout )
     return NO_INTERR;
 }
 
-static bool checkSpaceInWindow()
+static int checkSpaceInWindow()
 {
     if (connection.lfs < connection.lar)
         return ((MAX_SQN - connection.lar) + connection.lfs + 1) <  WND_SIZE
@@ -554,9 +564,9 @@ static void *Dsender ( void *ppp )
 }
 
 /* funcion auxiliar encargada de actualizar el RTT */
-void updRTT ()
+static void updRTT ( unsigned char seqn )
 {
-    double rtt_sample = Now() - connection.timestamp[connection.lar];
+    double rtt_sample = Now() - connection.timestamp[seqn];
 
     if ( connection.mdev < 0 )
     {
@@ -589,7 +599,7 @@ void updRTT ()
     return;
 }
 
-void sendPacket( int seqn )
+static void sendPacket( int seqn )
 /* reenvia un paquete */
 /* si seqn == -1, en vez de reenviar, envia un paquete por primera vez */
 {
@@ -657,7 +667,7 @@ void sendPacket( int seqn )
     connection.exp_ack[i] = 1;
 }
 
-int in_SWindow ( unsigned char seqn )
+static int in_SWindow ( unsigned char seqn )
 /* verifica que seqn este en la ventana de envio */
 {
     if ( connection.lfs > connection.lar )
@@ -676,7 +686,7 @@ int in_SWindow ( unsigned char seqn )
     }
 }
 
-int in_RWindow ( unsigned char seqn )
+static int in_RWindow ( unsigned char seqn )
 /* verifica que seqn este en la ventana de recepcion */
 {
     if ( connection.laf > connection.lfr )
