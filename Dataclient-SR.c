@@ -20,11 +20,11 @@
 
 /* Version Selective Repeat */
 
-static void updRTT(); /* funcion para actualizar RTT y timeout */
+static void updRTT( unsigned char seqn ); /* funcion para actualizar RTT y timeout */
 static void sendPacket( int seqn ); /* reenvia un paquete */
 static int in_SWindow ( unsigned char seqn ); /* verifica que seqn este en la ventana de envio */
 static int in_RWindow ( unsigned char seqn ); /* verifica que seqn este en la ventana de recepcion */
-static int checkSpaceInWindow()
+static int checkSpaceInWindow();
 
 int Data_debug = 0; /* para debugging */
 
@@ -49,9 +49,9 @@ struct
     int retries[MAX_SQN + 1];       /* retries por paquete */
     unsigned char swindow[MAX_SQN + 1][BUF_SIZE]; /* ventana de envio */
     unsigned char rwindow[MAX_SQN + 1][BUF_SIZE]; /* ventana de recepcion */
-    unsigned char exp_ack[MAX_SQN + 1]  /* ACKs esperando */
-    unsigned char exp_dat[MAX_SQN + 1]  /* data esperando */
-    unsigned char resend[MAX_SQN + 1]   /* flags para indicar reenvio */
+    unsigned char exp_ack[MAX_SQN + 1];  /* ACKs esperando */
+    unsigned char exp_dat[MAX_SQN + 1];  /* data esperando */
+    unsigned char resend[MAX_SQN + 1];   /* flags para indicar reenvio */
     double timeout[MAX_SQN + 1];    /* tiempo restante antes de retransmision */
     double timestamp[MAX_SQN + 1];  /* marca cuando fue enviado el ultimo paquete */
     int eof;
@@ -91,16 +91,18 @@ double Now()
 /* Inicializa estructura conexión y ventana */
 int init_connection ( int id )
 {
-    int cl;
+    int i;
     pthread_t pid;
     int *p;
 
     connection.lar = -1;
     connection.lfs = -1;
     connection.lfr = -1;
+
+    for ( i = 0; i < MAX_SQN; i++ )
+        connection.timeout[i] = -1;
+
     connection.laf = connection.lfr + WND_SIZE;
-    connection.tout_cnt = 0;
-    connection.tmp_cnt = 0;
     connection.state = CONNECTED;
     connection.wbox = create_bufbox ( MAX_QUEUE );
     connection.rbox = create_bufbox ( MAX_QUEUE );
@@ -322,6 +324,8 @@ static void *Drcvr ( void *ppp )
                 else /* inbuf[DSEQ] == connection.lar + 1  */
                 {
                     connection.lar = ( connection.lar + 1) % ( MAX_SQN + 1 );
+                    if ( Data_debug )
+                        fprintf ( stderr, "Correr ventana. lar = %d\n", connection.lar );
                 }
 
                 /* reseteamos valores de resend y timeout */
@@ -468,11 +472,19 @@ int Dclient_timeout_or_pending_data( double *timeout )
         return NO_INTERR;
     }
 
+    if ( boxsz ( connection.wbox ) != 0
+        && checkSpaceInWindow() ) /* verificar que ventana sea menor que wnd_size, arreglar esto */
+        {
+            /* data from client, and space in the window */
+            *timeout = Now();
+            return INTERR_DATA;
+        }
+
     for ( i = 0; i < MAX_SQN + 1; i++)
     {
         /* revisamos si hay que reenviar */
         /* revisamos si hay timeouts vencidos */
-        if ( connection.resend[i] || ( connection.timeout[i] <= Now() && connection.timeout >= 0 )
+        if ( connection.resend[i] || ( connection.timeout[i] <= Now() && connection.timeout >= 0 ) )
         {
             connection.resend[i] = 1;
             *timeout = Now();
@@ -486,23 +498,15 @@ int Dclient_timeout_or_pending_data( double *timeout )
 
     }
 
-    if ( boxsz ( connection.wbox ) != 0
-        && checkSpaceInWindow() ) /* verificar que ventana sea menor que wnd_size, arreglar esto */
-    {
-        /* data from client, and space in the window */
-        *timeout = Now();
-        return INTERR_DATA;
-    }
-
     return NO_INTERR;
 }
 
 static int checkSpaceInWindow()
 {
     if (connection.lfs < connection.lar)
-        return ((MAX_SQN - connection.lar) + connection.lfs + 1) <  WND_SIZE
+        return ((MAX_SQN - connection.lar) + connection.lfs + 1) <  WND_SIZE;
     else
-        return (connection.lfs - connection.lar) < WND_SIZE
+        return (connection.lfs - connection.lar) < WND_SIZE;
 }
 
 
@@ -511,7 +515,7 @@ static void *Dsender ( void *ppp )
 {
     double timeout;
     struct timespec tt;
-    int rc, i;
+    int rc, i, ret;
 
 
     for ( ;; )
@@ -613,7 +617,7 @@ static void sendPacket( int seqn )
             ( char * ) connection.swindow[nlfs] + DHDR, BUF_SIZE );
 
         connection.swindow[nlfs][DID] = connection.id;
-        connection.swindow[nlfs][DSEQ] = i;
+        connection.swindow[nlfs][DSEQ] = seqn;
         connection.swindow[nlfs][DRTN] = 1;
 
         if ( connection.pending_sz[nlfs] == -1 ) /* eof */
@@ -646,25 +650,25 @@ static void sendPacket( int seqn )
         return;
     }
 
-    if ( connection.retries[i]++ > RETRIES )
+    if ( connection.retries[seqn]++ > RETRIES )
     {
         fprintf ( stderr, "Too many retries.\n");
         del_connection();
         exit(1);
     }
 
-    connection.swindow[i][DRTN] = connection.retries[i];
+    connection.swindow[seqn][DRTN] = connection.retries[seqn];
 
     if ( Data_debug )
-        fprintf ( stderr, "Reenviando Paquete: seqn = %d, lfs = %d, retries = %d\n", i, connection.lfs, connection.retries[i] );
+        fprintf ( stderr, "Reenviando Paquete: seqn = %d, lfs = %d, retries = %d\n", seqn, connection.lfs, connection.retries[seqn] );
 
-    send ( Dsock, connection.swindow[i], connection.pending_sz[i] + DHDR, 0 );
+    send ( Dsock, connection.swindow[seqn], connection.pending_sz[seqn] + DHDR, 0 );
 
-    connection.timestamp[i] = Now();
-    connection.timeout[i] = Now() + connection.rtt;
+    connection.timestamp[seqn] = Now();
+    connection.timeout[seqn] = Now() + connection.rtt;
 
-    connection.resend[i] = 0;
-    connection.exp_ack[i] = 1;
+    connection.resend[seqn] = 0;
+    connection.exp_ack[seqn] = 1;
 }
 
 static int in_SWindow ( unsigned char seqn )

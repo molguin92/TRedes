@@ -6,7 +6,7 @@ BIN= bwc-sr
 
 all: $(BIN)
 
-bwc-gbn: bwc.o jsocket6.4.o Dataclient-SR.o jsocket6.4.h bufbox.o 
+bwc-sr: bwc.o jsocket6.4.o Dataclient-SR.o jsocket6.4.h bufbox.o 
 	$(CC) $(CFLAGS) bwc.o jsocket6.4.o Dataclient-SR.o bufbox.o -o $@ -lpthread -lrt
 
 cleanall: 
