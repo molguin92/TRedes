@@ -294,8 +294,8 @@ static void *Drcvr ( void *ppp )
             /* verificamos que este dentro de la ventana y que coincidan
              * los numeros de reenvios*/
 
-             /* RESETEAR VALORES DE RESEND Y TIMEOUTS */
-             /* MOVER VENTANA */
+             /* RESETEAR VALORES DE RESEND Y TIMEOUTS: LISTO?*/
+             /* MOVER VENTANA : LISTO? */
 
             if ( in_SWindow( inbuf[DSEQ] ) )
             {
@@ -318,6 +318,16 @@ static void *Drcvr ( void *ppp )
                         connection.nack_cnt = 0;
                     }
                 }
+
+                /* movemos la ventana*/
+                else /* inbuf[DSEQ] != connection.lar + 1  */
+                {
+                    connection.lar++;
+                }
+
+                /* reseteamos valores de resend y timeout */
+                connection.resend[inbuf[DSEQ]] = 0;
+                connection.timeout[inbuf[DSEQ]]  = 0;
 
                 /* verificamos que el nro de retrans coincida y
                  * actualizamos el RTT */
@@ -398,7 +408,7 @@ static void *Drcvr ( void *ppp )
                         /* aqui agregar busy-waiting con condition en caso de
                         * que el box de recepcion se llene */
 
-                        while ( boxsz ( connection.rbox ) >= MAX_QUEUE )
+                        while ( boxsz ( connection.rbox ) >= MAX_QUEUE );
                             /* esperar condicion y luego seguir */
                     }
                 }
@@ -467,7 +477,7 @@ int Dclient_timeout_or_pending_data( double *timeout )
     }
 
     if ( boxsz ( connection.wbox ) != 0
-        && abs ( connection.lfs - connection.lar ) < WND_SIZE ) /* verificar que ventana sea menor que wnd_size, arreglar esto */
+        && checkSpaceInWindow() ) /* verificar que ventana sea menor que wnd_size, arreglar esto */
     {
         /* data from client, and space in the window */
         *timeout = Now();
@@ -476,6 +486,15 @@ int Dclient_timeout_or_pending_data( double *timeout )
 
     return NO_INTERR;
 }
+
+static bool checkSpaceInWindow()
+{
+    if (connection.lfs < connection.lar)
+        return ((MAX_SQN - connection.lar) + connection.lfs + 1) <  WND_SIZE
+    else
+        return (connection.lfs - connection.lar) < WND_SIZE
+}
+
 
 /* Thread enviador y retransmisor */
 static void *Dsender ( void *ppp )
