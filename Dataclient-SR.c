@@ -262,7 +262,6 @@ static void *Drcvr ( void *ppp )
 
         pthread_mutex_lock ( &Dlock );
 
-        /* arreglar aqui! */
         if ( inbuf[DTYPE] == CLOSE )
         {
             if ( Data_debug )
@@ -286,8 +285,6 @@ static void *Drcvr ( void *ppp )
             }
 
             connection.exp_dat[inbuf[DSEQ]] = 0;
-            connection.
-
             connection.state = CLOSED;
             Dclose ( cl );
         }
@@ -298,19 +295,9 @@ static void *Drcvr ( void *ppp )
              * los numeros de reenvios*/
 
              /* RESETEAR VALORES DE RESEND Y TIMEOUTS */
+             /* MOVER VENTANA */
 
-            if ( connection.lfs >= connection.lar )
-            {
-                in_window = inbuf[DSEQ] <= connection.lfs && inbuf[DSEQ] > connection.lar;
-            }
-            else
-            {
-                in_window = inbuf[DSEQ] <= connection.lfs || inbuf[DSEQ] > connection.lar;
-            }
-
-            fprintf(stderr, "In Window? = %d\n", in_window);
-
-            if ( in_window )
+            if ( in_SWindow( inbuf[DSEQ] ) )
             {
                 /* recibimos ack y ajustamos ventana */
 
@@ -327,7 +314,7 @@ static void *Drcvr ( void *ppp )
                     connection.nack_cnt++;
                     if ( connection.nack_cnt >= 3 )
                     {
-                        connection.resend[lar + 1] = 1;
+                        connection.resend[connection.lar + 1] = 1;
                         connection.nack_cnt = 0;
                     }
                 }
@@ -344,6 +331,7 @@ static void *Drcvr ( void *ppp )
                 }
 
                 pthread_cond_signal ( &Dcond );
+
             }
 
             else /* no esta en ventana */
@@ -351,7 +339,7 @@ static void *Drcvr ( void *ppp )
                 connection.nack_cnt++;
                 if ( connection.nack_cnt >= 3 )
                 {
-                    connection.resend[lar + 1] = 1;
+                    connection.resend[connection.lar + 1] = 1;
                     connection.nack_cnt = 0;
                 }
             }
@@ -378,6 +366,8 @@ static void *Drcvr ( void *ppp )
                 ack[DTYPE] = ACK;
                 ack[DSEQ] = inbuf[DSEQ];
                 ack[DRTN] = inbuf[DRTN];
+
+                /* verificar que no haya sido recibido */
 
                 if ( Data_debug ) fprintf ( stderr, "Dentro de Ventana, enviando ACK %d, seq=%d\n", ack[DID],
                                                 ack[DSEQ] );
@@ -455,7 +445,6 @@ int Dclient_timeout_or_pending_data( double *timeout )
 
     if ( connection.state == FREE || connection.eof )
     {
-        *timeout = Now() + 20;
         return NO_INTERR;
     }
 
@@ -478,7 +467,7 @@ int Dclient_timeout_or_pending_data( double *timeout )
     }
 
     if ( boxsz ( connection.wbox ) != 0
-        && abs ( connection.lfs - connection.lar ) < WND_SIZE )
+        && abs ( connection.lfs - connection.lar ) < WND_SIZE ) /* verificar que ventana sea menor que wnd_size, arreglar esto */
     {
         /* data from client, and space in the window */
         *timeout = Now();
@@ -624,7 +613,29 @@ void sendPacket( int seqn )
         connection.resend[nlfs] = 0;
         connection.exp_ack[nlfs] = 1;
         connection.lfs = nlfs;
+
+        return;
     }
+
+    if ( connection.retries[i]++ > RETRIES )
+    {
+        fprintf ( stderr, "Too many retries.\n");
+        del_connection();
+        exit(1);
+    }
+
+    connection.swindow[i][DRTN] = connection.retries[i];
+
+    if ( Data_debug )
+        fprintf ( stderr, "Reenviando Paquete: seqn = %d, lfs = %d, retries = %d\n", i, connection.lfs, connection.retries[i] );
+
+    send ( Dsock, connection.swindow[i], connection.pending_sz[i] + DHDR, 0 );
+
+    connection.timestamp[i] = Now();
+    connection.timeout[i] = Now() + connection.rtt;
+
+    connection.resend[i] = 0;
+    connection.exp_ack[i] = 1;
 }
 
 int in_SWindow ( unsigned char seqn )
