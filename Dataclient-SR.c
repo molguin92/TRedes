@@ -299,6 +299,7 @@ static void *Drcvr ( void *ppp )
             connection.exp_dat[inbuf[DSEQ]] = 0;
             connection.state = CLOSED;
             pthread_cond_signal ( &Dcond );
+            pthread_mutex_unlock ( &Dlock );
             Dclose ( cl );
         }
 
@@ -325,7 +326,7 @@ static void *Drcvr ( void *ppp )
                     connection.nack_cnt++;
                     if ( connection.nack_cnt >= 3 )
                     {
-                        connection.resend[connection.lar + 1] = 1;
+                        connection.resend[( connection.lar + 1) % ( MAX_SQN + 1 )] = 1;
                         connection.nack_cnt = 0;
                     }
                 }
@@ -367,7 +368,7 @@ static void *Drcvr ( void *ppp )
                 connection.nack_cnt++;
                 if ( connection.nack_cnt >= 3 )
                 {
-                    connection.resend[connection.lar + 1] = 1;
+                    connection.resend[( connection.lar + 1) % ( MAX_SQN + 1 )] = 1;
                     connection.nack_cnt = 0;
                 }
 
@@ -508,8 +509,8 @@ int Dclient_timeout_or_pending_data( double *timeout )
         /* revisamos si hay timeouts vencidos */
         if ( connection.resend[i] || ( connection.timeout[i] <= Now() && connection.timeout[i] >= 0 ) )
         {
-            if ( Data_debug )
-                fprintf ( stderr, "Resend = %d\n", i );
+
+            fprintf ( stderr, "Resend = %d\n", i );
             connection.resend[i] = 1;
             *timeout = Now();
             return INTERR_RSEND;
@@ -563,9 +564,9 @@ static void *Dsender ( void *ppp )
 
         if ( connection.state == FREE ) continue;
 
-        if ( rc == INTERR_RSEND ) /* retransmitir paquetes */
+        if ( rc == INTERR_RSEND && connection.lar != connection.lfs ) /* retransmitir paquetes */
         {
-
+            fprintf(stderr, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA %d\n", rc);
             if ( Data_debug ) fprintf ( stderr, "Retransmitir!\n" );
 
             for ( i = 0; i < MAX_SQN + 1; i++ )
