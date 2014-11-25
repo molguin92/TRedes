@@ -270,6 +270,7 @@ static void *Drcvr ( void *ppp )
 
         if ( cl != connection.id ) continue;
 
+        fprintf ( stderr, "Lock plox\n");
         pthread_mutex_lock ( &Dlock );
         fprintf ( stderr, "Lock plas\n");
 
@@ -297,6 +298,7 @@ static void *Drcvr ( void *ppp )
 
             connection.exp_dat[inbuf[DSEQ]] = 0;
             connection.state = CLOSED;
+            pthread_cond_signal ( &Dcond );
             Dclose ( cl );
         }
 
@@ -506,6 +508,8 @@ int Dclient_timeout_or_pending_data( double *timeout )
         /* revisamos si hay timeouts vencidos */
         if ( connection.resend[i] || ( connection.timeout[i] <= Now() && connection.timeout[i] >= 0 ) )
         {
+            if ( Data_debug )
+                fprintf ( stderr, "Resend = %d\n", i );
             connection.resend[i] = 1;
             *timeout = Now();
             return INTERR_RSEND;
@@ -513,7 +517,7 @@ int Dclient_timeout_or_pending_data( double *timeout )
 
         /* si no esta vencido, vemos si por lo menos es menor que
         * el timeout actual */
-        if ( connection.timeout[i] <= *timeout && connection.timeout >= 0 )
+        if ( connection.timeout[i] <= *timeout && connection.timeout[i] >= 0 )
             *timeout = connection.timeout[i];
 
     }
@@ -568,12 +572,11 @@ static void *Dsender ( void *ppp )
             {
                 if ( connection.resend[i] )
                 {
+                    fprintf ( stderr, "Reenviar SEQN = %d\n", i );
                     sendPacket ( i ); /* reenvia el paquete i */
                 }
 
             }
-
-            pthread_cond_signal ( &Dcond );
 
         }
 
@@ -581,7 +584,6 @@ static void *Dsender ( void *ppp )
         {
             /* hay data en el buffer, y tengo espacio para enviar */
             sendPacket( -1 );
-            pthread_cond_signal ( &Dcond );
         }
 
         pthread_mutex_unlock ( &Dlock );
